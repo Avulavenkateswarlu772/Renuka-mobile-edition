@@ -1,112 +1,257 @@
-// src/lib/kalki-core.js  — zero DOM, zero side-effects
+// ==== 1. API KEY & SMART MODELS ====
+let API_KEY = localStorage.getItem('jarvis_key');
+if (!API_KEY) {
+  API_KEY = prompt('Enter your Gemini API Key:');
+  if (API_KEY) localStorage.setItem('jarvis_key', API_KEY);
+}
 
-export const MODEL_NAMES = [
-  "gemini-3.6-flash",
-  "gemini-3.5-flash",
-  "gemini-3.1-flash-lite",
+// If your key has access to newer models, replace these.
+const MODELS = [
+  "gemini-2.0-flash",
+  "gemini-1.5-flash",
+  "gemini-1.5-flash-8b"
 ];
 
-export const VOICE_STOP_PHRASES = new Set([
-  "stop", "stop voice", "stop voice chat", "stop voice mode",
-  "stop listening", "stop talking", "end voice chat", "end conversation",
-  "voice off", "turn off voice", "turn off voice chat",
-  "pause voice", "pause voice chat", "cancel voice", "cancel voice chat",
-  "quit voice", "quit voice chat", "goodbye", "that's all", "that's enough",
-  "aapu", "aapeyi", "aapey", "aapandi", "voice aapu", "voice aapeyi",
-  "voice aapey", "voice aapandi", "chaalu", "chalu",
-  "ఆపు", "ఆపేయి", "ఆపండి", "చాలు", "వాయిస్ ఆపు", "వాయిస్ ఆపేయి",
-  "వాయిస్ ఆపండి", "మాట్లాడటం ఆపు", "మాట్లాడడం ఆపండి",
-  "వినడం ఆపు", "వినడం ఆపండి",
-]);
+const API_BASE = "https://generativelanguage.googleapis.com/v1beta/models";
 
-export const SKILL_REGISTRY = {
-  whatsapp:   { name: "WhatsApp",              keywords: /\bwhatsapp|message|reply|chat\b/i },
-  youtube:    { name: "YouTube",               keywords: /\b(youtube|video)\b/i },
-  search:     { name: "Web Search",            keywords: /\b(search|google|web|news|weather)\b/i },
-  email:      { name: "Email",                 keywords: /\b(email|mail|gmail|outlook)\b/i },
-  calendar:   { name: "Calendar",              keywords: /\b(calendar|schedule|meeting|event)\b/i },
-  tasks:      { name: "Tasks and Reminders",   keywords: /\b(task|reminder|todo)\b/i },
-  drive:      { name: "Cloud Files",           keywords: /\b(drive|file|folder|upload|download)\b/i },
-  documents:  { name: "Documents",             keywords: /\b(pdf|word|docx|excel|xlsx|spreadsheet|powerpoint|pptx)\b/i },
-  travel:     { name: "Travel",                keywords: /\b(flight|hotel|travel|trip)\b/i },
-  places:     { name: "Places and Restaurants",keywords: /\b(restaurant|place|shop|directions)\b/i },
-  prices:     { name: "Price Comparison",      keywords: /\b(price|cost|cheap|compare|buy)\b/i },
-  media:      { name: "Image and Media",       keywords: /\b(image|photo|picture|edit)\b/i },
-  automation: { name: "Multi-step Automation", keywords: /\b(automate|automation|workflow)\b/i },
-  memory:     { name: "Personal Memory",       keywords: /\b(remember|memory|save this)\b/i },
-};
+// ==== 2. MEMORY SYSTEM ====
+let MEMORY = JSON.parse(localStorage.getItem('jarvis_memory') || '[]');
 
-export function detectSkill(text) {
-  return Object.entries(SKILL_REGISTRY)
-    .find(([, skill]) => skill.keywords.test(text))?.[0] || null;
+function saveMemory() {
+  localStorage.setItem('jarvis_memory', JSON.stringify(MEMORY));
 }
 
-export function normalizeVoiceStopPhrase(text) {
-  return String(text || "").normalize("NFC").toLowerCase()
-    .replace(/^\s*(?:kalki|కల్కి)[,\s]*/i, "")
-    .replace(/[.,!?;:…]+/g, " ")
-    .replace(/\s+/g, " ").trim()
-    .replace(/\s+(?:please|now)$/i, "").trim();
+const chat = document.getElementById('chat');
+const input = document.getElementById('msg');
+const micBtn = document.getElementById('mic-btn');
+const clearBtn = document.getElementById('clear-btn');
+const camBtn = document.getElementById('cam-btn');
+const imgInput = document.getElementById('img-input');
+const sendBtn = document.getElementById('send');
+
+function add(t, who) {
+  const d = document.createElement('div');
+  d.className = 'msg ' + who;
+  d.textContent = t;
+  chat.appendChild(d);
+  chat.scrollTop = chat.scrollHeight;
+  return d;
 }
 
-export function detectEverydayTool(text) {
-  if (/\b(time|what time|samayam)\b/i.test(text)) return "time";
-  if (/\b(weather|temperature|varsham)\b/i.test(text)) return "weather";
-  if (/\b(timer|countdown|alarm)\b/i.test(text)) return "timer";
-  if (/\b(dice|roll|coin|flip|head|tail)\b/i.test(text)) return "dice";
-  if (/\b(joke|funny)\b/i.test(text)) return "joke";
-  if (/\b(motivat|inspire|quote)\b/i.test(text)) return "motivation";
-  if (/\b(tech news|ai news)\b/i.test(text)) return "techNews";
-  if (/\b(translate|telugu lo)\b/i.test(text)) return "translate";
-  if (/\b(currency|convert|exchange rate|rupees?|inr|dollar)\b/i.test(text)) return "currency";
-  if (/\b(meaning|define|dictionary)\b/i.test(text)) return "meaning";
-  if (/\b(password)\b/i.test(text)) return "password";
-  if (/\b(wikipedia|wiki)\b/i.test(text)) return "wikipedia";
-  if (/\b(open|launch)\s+(youtube|yt)\b/i.test(text)) return "openYouTube";
-  if (/\b(open|launch)\s+google\b/i.test(text)) return "openGoogle";
-  if (/\b(youtube)\b.*\b(song|search|play)\b/i.test(text)) return "youtubeSearch";
-  if (/\b(bitcoin|btc)\b/i.test(text)) return "bitcoin";
-  return null;
+MEMORY.forEach(m => {
+  add(
+    (m.role === 'user' ? 'YOU: ' : 'J.A.R.V.I.S: ') + m.text,
+    m.role === 'user' ? 'user' : 'ai'
+  );
+});
+
+// ==== 3. GEMINI BRAIN (MEMORY INTEGRATED) ====
+async function callGemini(p) {
+  const contents = MEMORY.slice(-12).map(m => ({
+    role: m.role,
+    parts: [{ text: m.text }]
+  }));
+
+  contents.push({
+    role: 'user',
+    parts: [{ text: p }]
+  });
+
+  let lastErr;
+
+  for (const m of MODELS) {
+    try {
+      const res = await fetch(`${API_BASE}/${m}:generateContent?key=${API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ contents })
+      });
+
+      const data = await res.json();
+
+      if (data.error) {
+        lastErr = new Error(data.error.message);
+        if (/high demand|temporar|quota|rate|unavailable|deprecated|not found/i.test(data.error.message)) {
+          continue;
+        }
+        throw lastErr;
+      }
+
+      if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+        throw new Error("No response from Gemini.");
+      }
+
+      return data.candidates[0].content.parts[0].text;
+
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  throw lastErr || new Error("All models failed.");
 }
 
-export function normalizeCommand(text) {
-  return text.trim()
-    .replace(/\b(chey|cheyyi|cheyyandi|kavali)\b/gi, "do")
-    .replace(/\b(teruvu|open\s+chey|open\s+cheyyi)\b/gi, "open")
-    .replace(/\b(pampu|pampinch(u|andi)?|send\s+chey)\b/gi, "send")
-    .replace(/\b(cheppu|chepp(u|andi)?|teliyajey)\b/gi, "tell me")
-    .replace(/\b(latest)\s+AI\s+(news|vishayalu)\b/gi, "search latest AI news")
-    .replace(/\s+/g, " ").trim();
-}
+async function askGemini(p) {
+  const thinking = add('J.A.R.V.I.S: Thinking...', 'ai');
 
-export function isExplicitAction(text) {
-  return /\b(open|launch|start|send|reply|message|tell|search|find|create|add|schedule|show|read|do)\b/i.test(text)
-      || /చెప్పు|పంపు|చూడు|వెతుకు|తెరువు|చేయి|చెయ్/i.test(text);
-}
-
-const DESKTOP_NAMES = "calculator|calc|notes|notepad|text editor|browser|web browser";
-
-export function detectDesktopAction(text) {
-  const normalized = normalizeCommand(text).replace(/[.!?]+$/g, "").trim();
-  const forward = normalized.match(new RegExp(`^(?:please\\s+)?(?:open|launch|start)\\s+(?:the\\s+)?(${DESKTOP_NAMES})(?:\\s+please)?$`, "i"));
-  const reverse = normalized.match(new RegExp(`^(${DESKTOP_NAMES})\\s+(?:open|launch|start)$`, "i"));
-  const requested = (forward?.[1] || reverse?.[1] || "").toLowerCase();
-  if (!requested) return null;
-  if (requested === "calculator" || requested === "calc") return { id: "calculator", label: "Calculator" };
-  if (["notes", "notepad", "text editor"].includes(requested)) return { id: "notes", label: "the text editor" };
-  return { id: "browser", label: "a blank tab in your default browser" };
-}
-
-export function plausibleGeminiKey(value) {
-  return /^(?:AIza[A-Za-z0-9_-]{20,96}|AQ\.[A-Za-z0-9_-]{20,96})$/.test(value);
-}
-
-export function conversationPreferences() {
   try {
-    return Object.assign(
-      {},
-      JSON.parse(localStorage.getItem("kalki.preferences") || "{}"),
-      JSON.parse(localStorage.getItem("kalki.conversation") || "{}")
-    );
-  } catch { return {}; }
+    const reply = await callGemini(p);
+
+    MEMORY.push({ role: 'user', text: p });
+    MEMORY.push({ role: 'model', text: reply });
+    saveMemory();
+
+    thinking.textContent = 'J.A.R.V.I.S: ' + reply;
+    speak(reply);
+
+  } catch (e) {
+    thinking.textContent = 'J.A.R.V.I.S: ERROR - ' + e.message;
+  }
+}
+
+// ==== 4. VISION ENGINE (EYES) ====
+if (camBtn && imgInput) {
+  camBtn.onclick = () => imgInput.click();
+
+  imgInput.onchange = () => {
+    const file = imgInput.files[0];
+    if (!file) return;
+
+    const reader = new FileReader();
+
+    reader.onload = () => {
+      const base64 = reader.result.split(',')[1];
+      const q = input.value.trim() || 'What do you see? Describe briefly.';
+
+      add('YOU: [IMAGE] ' + q, 'user');
+      input.value = '';
+
+      askVision(base64, file.type, q);
+    };
+
+    reader.readAsDataURL(file);
+  };
+}
+
+async function askVision(base64, mime, q) {
+  const thinking = add('J.A.R.V.I.S: Analyzing image...', 'ai');
+  let lastErr;
+
+  for (const m of MODELS) {
+    try {
+      const res = await fetch(`${API_BASE}/${m}:generateContent?key=${API_KEY}`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          contents: [{
+            role: "user",
+            parts: [
+              { text: q },
+              { inline_data: { mime_type: mime, data: base64 } }
+            ]
+          }]
+        })
+      });
+
+      const data = await res.json();
+
+      if (data.error) {
+        lastErr = new Error(data.error.message);
+        if (/high demand|temporar|quota|rate|unavailable|deprecated|not found/i.test(data.error.message)) {
+          continue;
+        }
+        throw lastErr;
+      }
+
+      if (!data.candidates || !data.candidates[0] || !data.candidates[0].content) {
+        throw new Error("No vision response from Gemini.");
+      }
+
+      const reply = data.candidates[0].content.parts[0].text;
+      thinking.textContent = 'J.A.R.V.I.S: ' + reply;
+      speak(reply);
+      return;
+
+    } catch (e) {
+      lastErr = e;
+    }
+  }
+
+  thinking.textContent = 'J.A.R.V.I.S: ERROR - ' + (lastErr ? lastErr.message : "Vision failed");
+}
+
+// ==== 5. VOICE & UTILS ====
+const SR = window.SpeechRecognition || window.webkitSpeechRecognition;
+
+if (SR && micBtn) {
+  const rec = new SR();
+  rec.lang = 'en-US';
+  rec.interimResults = false;
+  rec.continuous = false;
+
+  rec.onresult = (e) => {
+    const t = e.results[0][0].transcript;
+    add('YOU: ' + t, 'user');
+    askGemini(t);
+  };
+
+  rec.onerror = (e) => {
+    micBtn.innerHTML = '🎤';
+    add('SYSTEM: Voice error - ' + e.error, 'ai');
+  };
+
+  rec.onend = () => {
+    micBtn.innerHTML = '🎤';
+  };
+
+  micBtn.onclick = () => {
+    rec.start();
+    micBtn.innerHTML = 'LISTENING...';
+  };
+}
+
+let voices = [];
+
+function loadVoices() {
+  voices = speechSynthesis.getVoices();
+}
+
+loadVoices();
+speechSynthesis.onvoiceschanged = loadVoices;
+
+function speak(t) {
+  const u = new SpeechSynthesisUtterance(t);
+  u.rate = 1.05;
+  u.pitch = 0.85;
+
+  const v = voices.find(v => v.lang.startsWith('en'));
+  if (v) u.voice = v;
+
+  speechSynthesis.speak(u);
+}
+
+if (sendBtn) {
+  sendBtn.onclick = () => {
+    const t = input.value.trim();
+    if (!t) return;
+
+    add('YOU: ' + t, 'user');
+    input.value = '';
+    askGemini(t);
+  };
+}
+
+if (input) {
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') sendBtn.click();
+  });
+}
+
+if (clearBtn) {
+  clearBtn.onclick = () => {
+    MEMORY = [];
+    saveMemory();
+    chat.innerHTML = '';
+    add('SYSTEM: Memory cleared.', 'ai');
+  };
 }
